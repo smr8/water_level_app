@@ -28,12 +28,56 @@ class _WaterLevelAppState extends State<WaterLevelApp> {
   final ScrollController _logScrollController = ScrollController();
   
   // 输入控制器
-  final TextEditingController _paramController = TextEditingController();
+  final TextEditingController _addressController = TextEditingController(text: "001");
+  final TextEditingController _measureParamController = TextEditingController();
+  final TextEditingController _systemParamController = TextEditingController();
+
+  // 选中的命令
+  String _selectedMeasureCmd = "GLSZ";
+  String _selectedSystemCmd = "BZQH";
 
   // 定义目标 UUID (来自 X-E45x 说明书)
   final String serviceUuid = "fff0"; 
   final String notifyUuid = "fff1"; // 接收 (APP <- 设备)
   final String writeUuid = "fff2";  // 发送 (APP -> 设备)
+
+  // 测量参数列表
+  final List<Map<String, String>> _measureCommands = [
+    {"cmd": "LCXZ", "label": "量程选择 (LCXZ)"},
+    {"cmd": "YXYZ", "label": "有效阈值 (YXYZ)"},
+    {"cmd": "ZXCJ", "label": "最小测距 (ZXCJ)"},
+    {"cmd": "ZDCJ", "label": "最大测距 (ZDCJ)"},
+    {"cmd": "PJCS", "label": "平均次数 (PJCS)"},
+    {"cmd": "MBXZ", "label": "目标选择 (MBXZ)"},
+    {"cmd": "JDXZ", "label": "精度选择 (JDXZ)"},
+    {"cmd": "GLSZ", "label": "功率设置 (GLSZ)"},
+    {"cmd": "JSCS", "label": "积扫次数 (JSCS)"},
+    {"cmd": "DJLB", "label": "短距滤波 (DJLB)"},
+    {"cmd": "DSWJ", "label": "读传感器 (DSWJ)"},
+  ];
+
+  // 系统参数列表
+  final List<Map<String, String>> _systemCommands = [
+    {"cmd": "BZQH", "label": "本站区号 (BZQH)"},
+    {"cmd": "BZZH", "label": "本站站号 (BZZH)"},
+    {"cmd": "SCXX", "label": "输出信息 (SCXX)"},
+    {"cmd": "GZMS", "label": "工作模式 (GZMS)"},
+    {"cmd": "CYJG", "label": "采样间隔 (CYJG)"},
+    {"cmd": "WCRX", "label": "误差容限 (WCRX)"},
+    {"cmd": "PAJG", "label": "平安间隔 (PAJG)"},
+    {"cmd": "BWGS", "label": "报文格式 (BWGS)"},
+    {"cmd": "JL04", "label": "4MA距离 (JL04)"},
+    {"cmd": "JL20", "label": "20MA距离 (JL20)"},
+    {"cmd": "JZ04", "label": "4MA校准 (JZ04)"},
+    {"cmd": "JZ20", "label": "20MA校准 (JZ20)"},
+    {"cmd": "TXYR", "label": "通信预热 (TXYR)"},
+    {"cmd": "FWYS", "label": "发完延时 (FWYS)"},
+    {"cmd": "TXSL", "label": "通信速率 (TXSL)"},
+    {"cmd": "SZPY", "label": "时钟偏移 (SZPY)"},
+    {"cmd": "BJSX", "label": "报警上限 (BJSX)"},
+    {"cmd": "BJXX", "label": "报警下限 (BJXX)"},
+    {"cmd": "SWJZ", "label": "水位校正 (SWJZ)"},
+  ];
 
   @override
   void initState() {
@@ -150,6 +194,18 @@ class _WaterLevelAppState extends State<WaterLevelApp> {
     }
   }
 
+  // 构建带地址的命令
+  // 格式: CMD-ADDR:VALUE (写入) 或 CMD-ADDR: (读取)
+  void _sendParamCommand(String cmd, String value) {
+    String addr = _addressController.text;
+    if (addr.isEmpty) {
+      addr = "001"; // 默认
+    }
+    // 如果value为空，则是读取命令，如果不为空，则是写入命令
+    // 注意：无论读写，命令格式都是 CMD-ADDR:VALUE (读取时VALUE为空)
+    String fullCmd = "$cmd-$addr:$value";
+    _sendCommand(fullCmd);
+  }
 
   // 辅助：添加日志
   void _addLog(String msg, {bool isError = false, bool isRx = false}) {
@@ -213,7 +269,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> {
           if (_isConnected) ...[
             // 1. 日志显示区域
             Expanded(
-              flex: 4,
+              flex: 3,
               child: Container(
                 color: Colors.black12,
                 child: ListView.builder(
@@ -227,77 +283,151 @@ class _WaterLevelAppState extends State<WaterLevelApp> {
               ),
             ),
             
-            // 2. 常用查询按钮区 (基于说明书)
             const Divider(),
-            const Text("常用查询 (默认地址 001)"),
+            
+            // 2. 常用查询区 + 地址设置
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: Row(
+                children: [
+                  const Text("地址: ", style: TextStyle(fontWeight: FontWeight.bold)),
+                  SizedBox(
+                    width: 60,
+                    child: TextField(
+                      controller: _addressController,
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(child: Text("常用查询", style: TextStyle(fontWeight: FontWeight.bold))),
+                ],
+              ),
+            ),
             Wrap(
               spacing: 10,
               children: [
                 ActionChip(
                   label: const Text("读取数据 (DSWJ)"),
-                  onPressed: () => _sendCommand("DSWJ-001:"), // 说明书 4.1
+                  onPressed: () => _sendParamCommand("DSWJ", ""),
                 ),
                 ActionChip(
                   label: const Text("查发射功率 (GLSZ)"),
-                  onPressed: () => _sendCommand("GLSZ-001:"), // 说明书 4.1
+                  onPressed: () => _sendParamCommand("GLSZ", ""),
                 ),
                 ActionChip(
                   label: const Text("查版本 (VER)"),
-                  onPressed: () => _sendCommand("AT+VER\r\n"), // 蓝牙模块指令
+                  onPressed: () => _sendCommand("AT+VER"),
                 ),
               ],
             ),
 
-            // 3. 参数写入区
             const Divider(),
-            const Text("参数设置"),
+            
+            // 3. 测量参数设置
+            const Text("测量参数", style: TextStyle(fontWeight: FontWeight.bold)),
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Row(
                 children: [
-                  // 下拉选择命令头
-                  DropdownMenu<String>(
-                    initialSelection: "GLSZ",
-                    label: const Text("命令"),
-                    dropdownMenuEntries: const [
-                      DropdownMenuEntry(value: "GLSZ", label: "功率设置 (GLSZ)"),
-                      DropdownMenuEntry(value: "SWJZ", label: "水位校正 (SWJZ)"),
-                      DropdownMenuEntry(value: "LCXZ", label: "量程选择 (LCXZ)"),
-                      DropdownMenuEntry(value: "PJCS", label: "平均次数 (PJCS)"),
-                    ],
-                    onSelected: (value) {
-                      // 这里可以用变量存起来，为了演示简化处理
-                    },
-                  ),
-                  const SizedBox(width: 10),
-                  // 参数输入框
                   Expanded(
-                    child: TextField(
-                      controller: _paramController,
+                    flex: 2,
+                    child: DropdownButtonFormField<String>(
+                      value: _selectedMeasureCmd,
                       decoration: const InputDecoration(
-                        labelText: "参数值 (如 0031)",
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                        isDense: true,
+                      ),
+                      items: _measureCommands.map((item) {
+                        return DropdownMenuItem(
+                          value: item['cmd'],
+                          child: Text(item['label']!, style: const TextStyle(fontSize: 12)),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        if (value != null) setState(() => _selectedMeasureCmd = value);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    flex: 1,
+                    child: TextField(
+                      controller: _measureParamController,
+                      decoration: const InputDecoration(
+                        labelText: "参数值",
+                        hintText: "空为查询",
                         border: OutlineInputBorder(),
                         isDense: true,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  // 发送按钮
+                  const SizedBox(width: 5),
                   ElevatedButton(
-                    onPressed: () {
-                      // 组合命令：命令头-地址:参数
-                      // 例如：GLSZ-001:0031
-                      String cmdHeader = "GLSZ"; // 这里应该取下拉框的值，简化写死为GLSZ演示
-                      String val = _paramController.text;
-                      if (val.isEmpty) return;
-                      _sendCommand("$cmdHeader-001:$val");
-                    },
-                    child: const Text("写入"),
+                    onPressed: () => _sendParamCommand(_selectedMeasureCmd, _measureParamController.text),
+                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+                    child: const Text("发送"),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 20),
+
+            // 4. 系统参数设置
+            const Text("系统参数", style: TextStyle(fontWeight: FontWeight.bold)),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: DropdownButtonFormField<String>(
+                      value: _selectedSystemCmd,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                        isDense: true,
+                      ),
+                      items: _systemCommands.map((item) {
+                        return DropdownMenuItem(
+                          value: item['cmd'],
+                          child: Text(item['label']!, style: const TextStyle(fontSize: 12)),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        if (value != null) setState(() => _selectedSystemCmd = value);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    flex: 1,
+                    child: TextField(
+                      controller: _systemParamController,
+                      decoration: const InputDecoration(
+                        labelText: "参数值",
+                        hintText: "空为查询",
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  ElevatedButton(
+                    onPressed: () => _sendParamCommand(_selectedSystemCmd, _systemParamController.text),
+                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+                    child: const Text("发送"),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
           ],
         ],
       ),
