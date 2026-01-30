@@ -61,25 +61,7 @@ dependencies:
     ```
 
 ## ⚠️ 常见问题与解决方案 (Troubleshooting)
-
-### 1. 报错 `PlatformException(writeCharacteristic, The WRITE property is not supported...)`
-*   **原因**：尝试使用了“带回复写入”模式，但硬件特征值 `FFF2` 仅支持“无回复写入”。
-*   **解决**：在写入代码中必须添加 `withoutResponse: true`。
-    ```dart
-    await _writeCharacteristic!.write(data, withoutResponse: true);
-    ```
-
-### 2. 报错 `cmdline-tools component is missing`
-*   **原因**：Android Studio 未安装命令行工具。
-*   **解决**：Android Studio -> SDK Manager -> SDK Tools -> 勾选 **Android SDK Command-line Tools** -> Apply。
-
-### 3. 扫描不到设备
-*   **原因**：Android 6.0+ 扫描蓝牙需要定位权限，且必须开启手机 GPS。
-*   **解决**：确保已在 APP 中授予位置权限，并下拉手机状态栏开启“位置信息”。
-
-### 4. 发送指令无反应
-*   **原因**：指令末尾缺少结束符。
-*   **解决**：确保发送的字符串末尾包含 `\r\n`。
+暂无
 
 ## 📝 核心代码逻辑 (`lib/main.dart`)
 
