@@ -29,6 +29,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> {
   
   // 输入控制器
   final TextEditingController _addressController = TextEditingController(text: "001");
+  final TextEditingController _customCmdController = TextEditingController();
   final TextEditingController _measureParamController = TextEditingController();
   final TextEditingController _systemParamController = TextEditingController();
 
@@ -285,14 +286,14 @@ class _WaterLevelAppState extends State<WaterLevelApp> {
             
             const Divider(),
             
-            // 2. 常用查询区 + 地址设置
+            // 2. 地址设置 + 自编命令
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8.0),
               child: Row(
                 children: [
                   const Text("地址: ", style: TextStyle(fontWeight: FontWeight.bold)),
                   SizedBox(
-                    width: 60,
+                    width: 50,
                     child: TextField(
                       controller: _addressController,
                       decoration: const InputDecoration(
@@ -304,26 +305,29 @@ class _WaterLevelAppState extends State<WaterLevelApp> {
                     ),
                   ),
                   const SizedBox(width: 10),
-                  const Expanded(child: Text("常用查询", style: TextStyle(fontWeight: FontWeight.bold))),
+                  Expanded(
+                    child: TextField(
+                      controller: _customCmdController,
+                      decoration: const InputDecoration(
+                        labelText: "自编命令 (如 GLSZ-001:)",
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  ElevatedButton(
+                    onPressed: () {
+                      if (_customCmdController.text.isNotEmpty) {
+                        _sendCommand(_customCmdController.text);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+                    child: const Text("发送"),
+                  ),
                 ],
               ),
-            ),
-            Wrap(
-              spacing: 10,
-              children: [
-                ActionChip(
-                  label: const Text("读取数据 (DSWJ)"),
-                  onPressed: () => _sendParamCommand("DSWJ", ""),
-                ),
-                ActionChip(
-                  label: const Text("查发射功率 (GLSZ)"),
-                  onPressed: () => _sendParamCommand("GLSZ", ""),
-                ),
-                ActionChip(
-                  label: const Text("查版本 (VER)"),
-                  onPressed: () => _sendCommand("AT+VER"),
-                ),
-              ],
             ),
 
             const Divider(),
