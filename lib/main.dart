@@ -4,6 +4,107 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+// 1. 定义日志条目类
+class LogEntry {
+  final DateTime timestamp;
+  final String direction; // "TX", "RX", "INFO", "ERROR"
+  final List<int>? rawData;
+  final String message;
+
+  LogEntry({
+    required this.timestamp,
+    required this.direction,
+    this.rawData,
+    required this.message,
+  });
+
+  String get hexString {
+    if (rawData == null) return "";
+    return rawData!.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
+  }
+
+  // 主界面简略显示
+  String get shortDisplay {
+    String time = "${timestamp.hour.toString().padLeft(2,'0')}:${timestamp.minute.toString().padLeft(2,'0')}:${timestamp.second.toString().padLeft(2,'0')}";
+    String prefix = direction == "RX" ? "⬇️" : (direction == "TX" ? "⬆️" : (direction == "ERROR" ? "❌" : "ℹ️"));
+    return "$time $prefix $message";
+  }
+}
+
+// 2. 详细日志页面
+class LogPage extends StatelessWidget {
+  final List<LogEntry> logs;
+
+  const LogPage({super.key, required this.logs});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("详细日志 (Log Details)")),
+      body: ListView.builder(
+        itemCount: logs.length,
+        itemBuilder: (context, index) {
+          // 倒序显示，最新的在上面？或者保持顺序。通常查看日志习惯最新的在最后或最前。
+          // 这里保持列表顺序 (index 0 是最早的)
+          final log = logs[index];
+          
+          final timeStr = "${log.timestamp.hour.toString().padLeft(2,'0')}:${log.timestamp.minute.toString().padLeft(2,'0')}:${log.timestamp.second.toString().padLeft(2,'0')}.${log.timestamp.millisecond.toString().padLeft(3,'0')}";
+          
+          Color typeColor = Colors.grey;
+          IconData typeIcon = Icons.info_outline;
+          if (log.direction == "TX") {
+            typeColor = Colors.blue;
+            typeIcon = Icons.arrow_upward;
+          } else if (log.direction == "RX") {
+            typeColor = Colors.green;
+            typeIcon = Icons.arrow_downward;
+          } else if (log.direction == "ERROR") {
+            typeColor = Colors.red;
+            typeIcon = Icons.error_outline;
+          }
+
+          return Card(
+            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(typeIcon, size: 16, color: typeColor),
+                      const SizedBox(width: 8),
+                      Text(log.direction, style: TextStyle(fontWeight: FontWeight.bold, color: typeColor)),
+                      const SizedBox(width: 16),
+                      Text(timeStr, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (log.rawData != null && log.rawData!.isNotEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      color: Colors.grey[200],
+                      child: SelectableText(
+                        "HEX: ${log.hexString}",
+                        style: const TextStyle(fontFamily: 'Courier', fontSize: 12, color: Colors.black87),
+                      ),
+                    ),
+                  if (log.rawData != null) const SizedBox(height: 8),
+                  SelectableText(
+                    "TEXT: ${log.message}",
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 void main() {
   runApp(const MaterialApp(home: WaterLevelApp()));
 }
@@ -24,7 +125,8 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   // 状态与日志
   bool _isScanning = false;
   bool _isConnected = false;
-  final List<String> _logs = [];
+  // 修改为 LogEntry 列表
+  final List<LogEntry> _logs = [];
   final ScrollController _logScrollController = ScrollController();
   
   // 输入控制器 (水位计)
@@ -46,14 +148,14 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   late TabController _tabController;
 
   // 选中的命令 (水位计)
-  String _selectedMeasureCmd = "GLSZ";
-  String _selectedSystemCmd = "BZQH";
+  String _selectedMeasureCmd = "DSWJ";
+  String _selectedSystemCmd = "BZZH";
 
   // 选中的命令 (遥测终端)
   String _selectedRunParamCmd = "BZQH";
-  String _selectedAlarmParamCmd = "SDYL";
+  String _selectedAlarmParamCmd = "S1XZ";
   String _selectedCommParamCmd = "CZBM";
-  String _selectedSingleCmd = "XTSZ";
+  String _selectedSingleCmd = "DDQZ";
   String _selectedVideoParamCmd = "SPDK";
 
   // 定义目标 UUID (来自 X-E45x 说明书)
@@ -137,7 +239,6 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
 
   // 遥测终端 - 报警参数列表
   final List<Map<String, String>> _alarmParamCommands = [
-    {"cmd": "SDYL", "label": "时段雨量 (SDYL)"},
     {"cmd": "S1XZ", "label": "水位1修正 (S1XZ)"},
     {"cmd": "S2XZ", "label": "水位2修正 (S2XZ)"},
     {"cmd": "S1JZ", "label": "水位1基值 (S1JZ)"},
@@ -174,11 +275,13 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
     {"cmd": "ZXZH", "label": "中心站3HEX (ZXZH)"},
     {"cmd": "CZMM", "label": "置密码2HEX (CZMM)"},
     {"cmd": "BYJB", "label": "置暴雨加报 (BYJB)"},
+    {"cmd": "XTSZ", "label": "系统时钟 (XTSZ)"},
   ];
 
   // 遥测终端 - 单个命令列表
   final List<Map<String, String>> _singleCommands = [
-    {"cmd": "XTSZ", "label": "系统时钟 (XTSZ)"},
+    {"cmd": "DDQZ", "label": "读当前值 (DDQZ)"},
+    {"cmd": "ZDZT", "label": "终端状态 (ZDZT)"},
     {"cmd": "YCZC", "label": "远程召测 (YCZC)"},
     {"cmd": "XTFW", "label": "系统复位 (XTFW)"},
     {"cmd": "YYBB", "label": "应用版本 (YYBB)"},
@@ -271,9 +374,10 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
               // 开启通知订阅
               await characteristic.setNotifyValue(true);
               characteristic.lastValueStream.listen((value) {
-                // 处理接收到的数据 (字节转字符串)
-                String response = utf8.decode(value); 
-                _addLog("收到: $response", isError: false, isRx: true);
+                // 处理接收到的数据
+                // 允许畸形UTF8，防止解析错误
+                String response = utf8.decode(value, allowMalformed: true); 
+                _addLog("收到: $response", direction: "RX", rawData: value);
               });
               _addLog("监听开启成功");
             }
@@ -281,7 +385,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
         }
       }
     } catch (e) {
-      _addLog("连接失败: $e", isError: true);
+      _addLog("连接失败: $e", direction: "ERROR");
     }
   }
 
@@ -302,33 +406,30 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   // 5. 发送命令核心函数
   Future<void> _sendCommand(String cmd) async {
     if (_writeCharacteristic == null) {
-      _addLog("错误: 未连接或未找到写入特征", isError: true);
+      _addLog("错误: 未连接或未找到写入特征", direction: "ERROR");
       return;
     }
 
     try {
       // 1. Append CRLF
       String finalCmd = "$cmd\r\n";
+      List<int> bytes = utf8.encode(finalCmd);
       
-      _addLog("发送: ${finalCmd.trim()}");
+      _addLog("发送: ${finalCmd.trim()}", direction: "TX", rawData: bytes);
 
       // 2. 关键修改：添加 withoutResponse: true
-      // 说明书规定 FFF2 是 "Write without response"
       await _writeCharacteristic!.write(
-        utf8.encode(finalCmd), 
-        withoutResponse: true // <--- 必须加这一句！
+        bytes, 
+        withoutResponse: true
       );
       
     } catch (e) {
-      _addLog("发送失败: $e", isError: true);
+      _addLog("发送失败: $e", direction: "ERROR");
     }
   }
 
   // 构建带地址的命令
-  // 格式: CMD-ADDR:VALUE (写入) 或 CMD-ADDR: (读取)
-  // useTelemetryAddr: true 使用遥测终端地址，false 使用水位计地址
   void _sendParamCommand(String cmd, String value, {bool useTelemetryAddr = false}) {
-    // 遥测终端地址处理
     if (useTelemetryAddr) {
       String zone = _telemetryZoneController.text;
       String station = _telemetryStationController.text;
@@ -339,22 +440,26 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
       String fullCmd = "$cmd-$zone-$station:$value";
       _sendCommand(fullCmd);
     } else {
-      // 水位计地址处理
       String addr = _addressController.text;
       if (addr.isEmpty) {
-        addr = "001"; // 默认
+        addr = "001"; 
       }
       String fullCmd = "$cmd-$addr:$value";
       _sendCommand(fullCmd);
     }
   }
 
-  // 辅助：添加日志
-  void _addLog(String msg, {bool isError = false, bool isRx = false}) {
-    String time = "${DateTime.now().hour}:${DateTime.now().minute}:${DateTime.now().second}";
-    String prefix = isRx ? "⬇️" : (isError ? "❌" : "ℹ️");
+  // 辅助：添加日志 (更新为支持 LogEntry)
+  void _addLog(String msg, {String direction = "INFO", List<int>? rawData}) {
+    final entry = LogEntry(
+      timestamp: DateTime.now(),
+      direction: direction,
+      rawData: rawData,
+      message: msg,
+    );
+    
     setState(() {
-      _logs.add("$time $prefix $msg");
+      _logs.add(entry);
     });
     // 自动滚动到底部
     Future.delayed(const Duration(milliseconds: 100), () {
@@ -370,6 +475,17 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
       appBar: AppBar(
         title: const Text("FMCW50 水位计助手"),
         actions: [
+          // 新增：日志页面入口
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: "查看详细日志",
+            onPressed: () {
+              Navigator.push(
+                context, 
+                MaterialPageRoute(builder: (context) => LogPage(logs: _logs))
+              );
+            },
+          ),
           if (_isConnected)
             IconButton(icon: const Icon(Icons.bluetooth_disabled), onPressed: _disconnect)
         ],
@@ -409,7 +525,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
 
           // 已连接：操作面板
           if (_isConnected) ...[
-            // 1. 日志显示区域
+            // 1. 日志显示区域 (显示简略信息)
             Expanded(
               flex: 3,
               child: Container(
@@ -419,7 +535,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                   itemCount: _logs.length,
                   itemBuilder: (context, index) => Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    child: Text(_logs[index], style: const TextStyle(fontSize: 12)),
+                    child: Text(_logs[index].shortDisplay, style: const TextStyle(fontSize: 12)),
                   ),
                 ),
               ),
@@ -507,7 +623,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                   value: _selectedMeasureCmd,
                                   decoration: const InputDecoration(
                                     border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                                     isDense: true,
                                   ),
                                   items: _measureCommands.map((item) {
@@ -556,7 +672,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                   value: _selectedSystemCmd,
                                   decoration: const InputDecoration(
                                     border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                                     isDense: true,
                                   ),
                                   items: _systemCommands.map((item) {
@@ -684,7 +800,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                   value: _selectedRunParamCmd,
                                   decoration: const InputDecoration(
                                     border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                                     isDense: true,
                                   ),
                                   items: _runParamCommands.map((item) {
@@ -726,47 +842,57 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                         const Text("报警参数", style: TextStyle(fontWeight: FontWeight.bold)),
                         Padding(
                           padding: const EdgeInsets.all(8.0),
-                          child: Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                flex: 2,
-                                child: DropdownButtonFormField<String>(
-                                  value: _selectedAlarmParamCmd,
-                                  decoration: const InputDecoration(
-                                    border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-                                    isDense: true,
+                              Row(
+                                children: [
+                                  Expanded(
+                                    flex: 2,
+                                    child: DropdownButtonFormField<String>(
+                                      value: _selectedAlarmParamCmd,
+                                      decoration: const InputDecoration(
+                                        border: OutlineInputBorder(),
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                                        isDense: true,
+                                      ),
+                                      items: _alarmParamCommands.map((item) {
+                                        return DropdownMenuItem(
+                                          value: item['cmd'],
+                                          child: Text(item['label']!, style: const TextStyle(fontSize: 12)),
+                                        );
+                                      }).toList(),
+                                      onChanged: (value) {
+                                        if (value != null) setState(() => _selectedAlarmParamCmd = value);
+                                      },
+                                    ),
                                   ),
-                                  items: _alarmParamCommands.map((item) {
-                                    return DropdownMenuItem(
-                                      value: item['cmd'],
-                                      child: Text(item['label']!, style: const TextStyle(fontSize: 12)),
-                                    );
-                                  }).toList(),
-                                  onChanged: (value) {
-                                    if (value != null) setState(() => _selectedAlarmParamCmd = value);
-                                  },
-                                ),
+                                  const Spacer(flex: 1), // 占位保持对齐
+                                  const SizedBox(width: 64 + 5), // 对齐按钮和间距
+                                ],
                               ),
-                              const SizedBox(width: 5),
-                              Expanded(
-                                flex: 1,
-                                child: TextField(
-                                  controller: _alarmParamController,
-                                  decoration: const InputDecoration(
-                                    labelText: "参数值",
-                                    hintText: "空为查询",
-                                    border: OutlineInputBorder(),
-                                    isDense: true,
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                              const SizedBox(height: 5),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _alarmParamController,
+                                      decoration: const InputDecoration(
+                                        labelText: "参数值",
+                                        hintText: "空为查询",
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ),
-                              const SizedBox(width: 5),
-                              ElevatedButton(
-                                onPressed: () => _sendParamCommand(_selectedAlarmParamCmd, _alarmParamController.text, useTelemetryAddr: true),
-                                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
-                                child: const Text("发送"),
+                                  const SizedBox(width: 5),
+                                  ElevatedButton(
+                                    onPressed: () => _sendParamCommand(_selectedAlarmParamCmd, _alarmParamController.text, useTelemetryAddr: true),
+                                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+                                    child: const Text("发送"),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -776,47 +902,57 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                         const Text("通信设置", style: TextStyle(fontWeight: FontWeight.bold)),
                         Padding(
                           padding: const EdgeInsets.all(8.0),
-                          child: Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                flex: 2,
-                                child: DropdownButtonFormField<String>(
-                                  value: _selectedCommParamCmd,
-                                  decoration: const InputDecoration(
-                                    border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-                                    isDense: true,
+                              Row(
+                                children: [
+                                  Expanded(
+                                    flex: 2,
+                                    child: DropdownButtonFormField<String>(
+                                      value: _selectedCommParamCmd,
+                                      decoration: const InputDecoration(
+                                        border: OutlineInputBorder(),
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                                        isDense: true,
+                                      ),
+                                      items: _commParamCommands.map((item) {
+                                        return DropdownMenuItem(
+                                          value: item['cmd'],
+                                          child: Text(item['label']!, style: const TextStyle(fontSize: 12)),
+                                        );
+                                      }).toList(),
+                                      onChanged: (value) {
+                                        if (value != null) setState(() => _selectedCommParamCmd = value);
+                                      },
+                                    ),
                                   ),
-                                  items: _commParamCommands.map((item) {
-                                    return DropdownMenuItem(
-                                      value: item['cmd'],
-                                      child: Text(item['label']!, style: const TextStyle(fontSize: 12)),
-                                    );
-                                  }).toList(),
-                                  onChanged: (value) {
-                                    if (value != null) setState(() => _selectedCommParamCmd = value);
-                                  },
-                                ),
+                                  const Spacer(flex: 1), // 占位保持对齐
+                                  const SizedBox(width: 64 + 5), // 对齐按钮和间距
+                                ],
                               ),
-                              const SizedBox(width: 5),
-                              Expanded(
-                                flex: 1,
-                                child: TextField(
-                                  controller: _commParamController,
-                                  decoration: const InputDecoration(
-                                    labelText: "参数值",
-                                    hintText: "空为查询",
-                                    border: OutlineInputBorder(),
-                                    isDense: true,
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                              const SizedBox(height: 5),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _commParamController,
+                                      decoration: const InputDecoration(
+                                        labelText: "参数值",
+                                        hintText: "空为查询",
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ),
-                              const SizedBox(width: 5),
-                              ElevatedButton(
-                                onPressed: () => _sendParamCommand(_selectedCommParamCmd, _commParamController.text, useTelemetryAddr: true),
-                                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
-                                child: const Text("发送"),
+                                  const SizedBox(width: 5),
+                                  ElevatedButton(
+                                    onPressed: () => _sendParamCommand(_selectedCommParamCmd, _commParamController.text, useTelemetryAddr: true),
+                                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+                                    child: const Text("发送"),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -834,7 +970,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                   value: _selectedSingleCmd,
                                   decoration: const InputDecoration(
                                     border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                                     isDense: true,
                                   ),
                                   items: _singleCommands.map((item) {
@@ -875,7 +1011,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                   value: _selectedVideoParamCmd,
                                   decoration: const InputDecoration(
                                     border: OutlineInputBorder(),
-                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                                     isDense: true,
                                   ),
                                   items: _videoParamCommands.map((item) {
