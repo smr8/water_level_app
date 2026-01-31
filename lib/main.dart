@@ -121,6 +121,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _writeCharacteristic;
   BluetoothCharacteristic? _notifyCharacteristic;
+  StreamSubscription<List<int>>? _notifySubscription;
   
   // 状态与日志
   bool _isScanning = false;
@@ -302,6 +303,8 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
 
   @override
   void dispose() {
+    _notifySubscription?.cancel();
+    _disconnect(); // Ensure disconnection on dispose
     _tabController.dispose();
     _addressController.dispose();
     _customCmdController.dispose();
@@ -371,15 +374,25 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
               _notifyCharacteristic = characteristic;
               _addLog("找到通知特征: FFF1");
               
+              // 防止重复订阅
+              await _notifySubscription?.cancel();
+
               // 开启通知订阅
-              await characteristic.setNotifyValue(true);
-              characteristic.lastValueStream.listen((value) {
-                // 处理接收到的数据
-                // 允许畸形UTF8，防止解析错误
-                String response = utf8.decode(value, allowMalformed: true); 
-                _addLog("收到: $response", direction: "RX", rawData: value);
-              });
-              _addLog("监听开启成功");
+              try {
+                await characteristic.setNotifyValue(true);
+                // 使用 StreamSubscription 管理订阅，防止内存泄漏
+                _notifySubscription = characteristic.lastValueStream.listen((value) {
+                  // 处理接收到的数据
+                  // 允许畸形UTF8，防止解析错误
+                  String response = utf8.decode(value, allowMalformed: true); 
+                  _addLog("收到: $response", direction: "RX", rawData: value);
+                }, onError: (e) {
+                  _addLog("接收数据错误: $e", direction: "ERROR");
+                });
+                _addLog("监听开启成功");
+              } catch (e) {
+                _addLog("开启通知失败: $e", direction: "ERROR");
+              }
             }
           }
         }
@@ -391,14 +404,30 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
 
   // 4. 断开连接
   Future<void> _disconnect() async {
+    // 先取消订阅，防止 Stream 泄漏
+    await _notifySubscription?.cancel();
+    _notifySubscription = null;
+
     if (_connectedDevice != null) {
+      // 尝试关闭通知 (虽然 disconnect 会自动断开，但显式调用更安全)
+      if (_notifyCharacteristic != null) {
+        try {
+          await _notifyCharacteristic!.setNotifyValue(false);
+        } catch (e) {
+          // 忽略断开时的错误
+        }
+      }
+
       await _connectedDevice!.disconnect();
-      setState(() {
-        _connectedDevice = null;
-        _isConnected = false;
-        _writeCharacteristic = null;
-        _notifyCharacteristic = null;
-      });
+      
+      if (mounted) {
+        setState(() {
+          _connectedDevice = null;
+          _isConnected = false;
+          _writeCharacteristic = null;
+          _notifyCharacteristic = null;
+        });
+      }
       _addLog("已断开连接");
     }
   }
