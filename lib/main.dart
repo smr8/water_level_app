@@ -122,6 +122,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   BluetoothCharacteristic? _writeCharacteristic;
   BluetoothCharacteristic? _notifyCharacteristic;
   StreamSubscription<List<int>>? _notifySubscription;
+  Completer<void>? _responseCompleter;
   
   // 状态与日志
   bool _isScanning = false;
@@ -386,6 +387,11 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                   // 允许畸形UTF8，防止解析错误
                   String response = utf8.decode(value, allowMalformed: true); 
                   _addLog("收到: $response", direction: "RX", rawData: value);
+                  
+                  // 收到回复，完成 Completer
+                  if (_responseCompleter != null && !_responseCompleter!.isCompleted) {
+                    _responseCompleter!.complete();
+                  }
                 }, onError: (e) {
                   _addLog("接收数据错误: $e", direction: "ERROR");
                 });
@@ -446,14 +452,36 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
       
       _addLog("发送: ${finalCmd.trim()}", direction: "TX", rawData: bytes);
 
+      // 初始化 Completer
+      _responseCompleter = Completer<void>();
+
       // 2. 关键修改：添加 withoutResponse: true
       await _writeCharacteristic!.write(
         bytes, 
         withoutResponse: true
       );
       
+      // 3. 等待回复，超时3秒
+      try {
+        await _responseCompleter!.future.timeout(const Duration(seconds: 3));
+      } on TimeoutException {
+        // 超时未收到回复，触发缓冲区重置
+        _addLog("超时未收到回复，尝试重置缓冲区...", direction: "ERROR");
+        
+        // 发送300个空格
+        String spaces = " " * 300;
+        List<int> spaceBytes = utf8.encode(spaces);
+        await _writeCharacteristic!.write(spaceBytes, withoutResponse: true);
+
+        // 等待10秒
+        await Future.delayed(const Duration(seconds: 10));
+        
+      }
+
     } catch (e) {
       _addLog("发送失败: $e", direction: "ERROR");
+    } finally {
+      _responseCompleter = null;
     }
   }
 
