@@ -1,8 +1,310 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+
+// Modbus RTU 页面
+class ModbusRTUPage extends StatefulWidget {
+  final BluetoothCharacteristic? writeCharacteristic;
+  final BluetoothCharacteristic? notifyCharacteristic;
+
+  const ModbusRTUPage({
+    super.key,
+    required this.writeCharacteristic,
+    required this.notifyCharacteristic,
+  });
+
+  @override
+  State<ModbusRTUPage> createState() => _ModbusRTUPageState();
+}
+
+class _ModbusRTUPageState extends State<ModbusRTUPage> {
+  final List<LogEntry> _logs = [];
+  final ScrollController _scrollController = ScrollController();
+  StreamSubscription? _subscription;
+
+  // 输入控制器
+  final TextEditingController _stationController = TextEditingController(text: "01");
+  final TextEditingController _funcController = TextEditingController(text: "03");
+  final TextEditingController _addrController = TextEditingController(text: "0000");
+  final TextEditingController _countController = TextEditingController(text: "0002");
+
+  // 接收数据显示
+  final TextEditingController _rxDataHexController = TextEditingController();
+  final TextEditingController _rxDataDecController = TextEditingController();
+
+  // 数据类型选择 (默认为整型)
+  String _selectedDataType = "Integer"; // "Integer" or "Float"
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.notifyCharacteristic != null) {
+      _subscription = widget.notifyCharacteristic!.lastValueStream.listen((value) {
+        if (value.isNotEmpty) {
+           _addLog("RX", value, "Received");
+           _handleReceivedData(value);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _subscription?.cancel();
+    _stationController.dispose();
+    _funcController.dispose();
+    _addrController.dispose();
+    _countController.dispose();
+    _rxDataHexController.dispose();
+    _rxDataDecController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleReceivedData(List<int> data) {
+    // 简单解析 Modbus RTU (03功能码返回)
+    // 格式: [站号] [功能码] [字节数] [数据...] [CRC低] [CRC高]
+    if (data.length < 5) return;
+    
+    // 如果是功能码 03
+    if (data[1] == 0x03) {
+      int byteCount = data[2];
+      if (data.length >= 3 + byteCount + 2) {
+        List<int> dataBytes = data.sublist(3, 3 + byteCount);
+        
+        // 1. 填入十六进制框
+        String hexStr = dataBytes.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
+        _rxDataHexController.text = hexStr;
+
+        // 2. 根据选择类型解析数值
+        if (_selectedDataType == "Float") {
+          // 尝试解析为浮点数 (IEEE 754)
+          // Modbus通常使用 ABCD 顺序 (Big Endian)
+          if (dataBytes.length == 4) {
+             // 32-bit float
+             ByteData byteData = ByteData(4);
+             for(int i=0; i<4; i++) byteData.setUint8(i, dataBytes[i]);
+             double floatVal = byteData.getFloat32(0, Endian.big);
+             _rxDataDecController.text = floatVal.toString();
+          } else {
+             _rxDataDecController.text = "Error: Need 4 bytes for Float";
+          }
+        } else {
+          // 默认为整型 (Big Endian)
+          BigInt value = BigInt.zero;
+          for (var b in dataBytes) {
+            value = (value << 8) | BigInt.from(b);
+          }
+          _rxDataDecController.text = value.toString();
+        }
+      }
+    }
+  }
+
+  void _addLog(String direction, List<int> data, String message) {
+    setState(() {
+      _logs.add(LogEntry(
+        timestamp: DateTime.now(),
+        direction: direction,
+        rawData: data,
+        message: message,
+      ));
+    });
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      }
+    });
+  }
+
+  // CRC16 计算 (Modbus RTU)
+  List<int> _calculateCRC(List<int> data) {
+    int crc = 0xFFFF;
+    for (int byte in data) {
+      crc ^= byte;
+      for (int i = 0; i < 8; i++) {
+        if ((crc & 0x0001) != 0) {
+          crc >>= 1;
+          crc ^= 0xA001;
+        } else {
+          crc >>= 1;
+        }
+      }
+    }
+    // 低位在前，高位在后
+    return [crc & 0xFF, (crc >> 8) & 0xFF];
+  }
+
+  void _send() async {
+    if (widget.writeCharacteristic == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未连接设备")));
+      return;
+    }
+
+    try {
+      // 解析输入 (假设输入为16进制字符串)
+      int station = int.parse(_stationController.text, radix: 16);
+      int func = int.parse(_funcController.text, radix: 16);
+      int addr = int.parse(_addrController.text, radix: 16);
+      int count = int.parse(_countController.text, radix: 16);
+
+      List<int> cmd = [];
+      cmd.add(station & 0xFF);
+      cmd.add(func & 0xFF);
+      cmd.add((addr >> 8) & 0xFF);
+      cmd.add(addr & 0xFF);
+      cmd.add((count >> 8) & 0xFF);
+      cmd.add(count & 0xFF);
+
+      List<int> crc = _calculateCRC(cmd);
+      cmd.addAll(crc);
+
+      _addLog("TX", cmd, "Sent");
+      await widget.writeCharacteristic!.write(cmd, withoutResponse: true);
+      
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("发送错误: $e")));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Modbus RTU 调试")),
+      body: Column(
+        children: [
+          // 上半部分：日志
+          Expanded(
+            flex: 2,
+            child: Container(
+              color: Colors.black12,
+              child: ListView.builder(
+                controller: _scrollController,
+                itemCount: _logs.length,
+                itemBuilder: (context, index) {
+                  final log = _logs[index];
+                  final timeStr = "${log.timestamp.hour.toString().padLeft(2,'0')}:${log.timestamp.minute.toString().padLeft(2,'0')}:${log.timestamp.second.toString().padLeft(2,'0')}";
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    child: SelectableText(
+                      "[$timeStr] ${log.direction}: ${log.hexString}",
+                      style: TextStyle(
+                        fontFamily: 'Courier',
+                        color: log.direction == "TX" ? Colors.blue[800] : (log.direction == "RX" ? Colors.green[800] : Colors.black),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          const Divider(height: 1),
+          // 下半部分：输入
+          Expanded(
+            flex: 3,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _stationController,
+                          decoration: const InputDecoration(labelText: "站号 (Hex)", border: OutlineInputBorder()),
+                          keyboardType: TextInputType.text,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          controller: _funcController,
+                          decoration: const InputDecoration(labelText: "功能码 (Hex)", border: OutlineInputBorder()),
+                          keyboardType: TextInputType.text,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _addrController,
+                          decoration: const InputDecoration(labelText: "起始地址 (Hex)", border: OutlineInputBorder()),
+                          keyboardType: TextInputType.text,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          controller: _countController,
+                          decoration: const InputDecoration(labelText: "读取点数 (Hex)", border: OutlineInputBorder()),
+                          keyboardType: TextInputType.text,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: _send,
+                      child: const Text("生成校验码并发送"),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  
+                  // 数据类型选择
+                  DropdownButtonFormField<String>(
+                    value: _selectedDataType,
+                    decoration: const InputDecoration(
+                      labelText: "解析类型",
+                      border: OutlineInputBorder(),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: "Integer", child: Text("Integer (整型)")),
+                      DropdownMenuItem(value: "Float", child: Text("Float (浮点数)")),
+                    ],
+                    onChanged: (val) {
+                      if (val != null) {
+                         setState(() {
+                           _selectedDataType = val;
+                           // 如果已有数据，重新解析需要保存原始数据，这里简单清空或让用户重发
+                           // 为了体验，可以暂存上一次的 rawData，这里简单处理: 清空显示
+                           _rxDataDecController.clear();
+                           _rxDataHexController.clear();
+                         });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+
+                  TextField(
+                    controller: _rxDataHexController,
+                    readOnly: true,
+                    decoration: const InputDecoration(labelText: "接收数据 (Hex)", border: OutlineInputBorder()),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _rxDataDecController,
+                    readOnly: true,
+                    decoration: const InputDecoration(labelText: "接收数据 (Dec/Float)", border: OutlineInputBorder()),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 // 1. 定义日志条目类
 class LogEntry {
@@ -160,6 +462,10 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   String _selectedSingleCmd = "DDQZ";
   String _selectedVideoParamCmd = "SPDK";
 
+  // 命令与控制器的映射 (分Tab)
+  final Map<String, TextEditingController> _waterLevelCmdMap = {};
+  final Map<String, TextEditingController> _telemetryCmdMap = {};
+
   // 定义目标 UUID (来自 X-E45x 说明书)
   final String serviceUuid = "fff0"; 
   final String notifyUuid = "fff1"; // 接收 (APP <- 设备)
@@ -299,7 +605,20 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   void initState() {
     super.initState();
     _checkPermissions();
+    _initCmdMap();
     _tabController = TabController(length: 2, vsync: this);
+  }
+
+  void _initCmdMap() {
+    // Tab 0: 水位计
+    for (var item in _measureCommands) _waterLevelCmdMap[item['cmd']!] = _measureParamController;
+    for (var item in _systemCommands) _waterLevelCmdMap[item['cmd']!] = _systemParamController;
+    
+    // Tab 1: 遥测终端
+    for (var item in _runParamCommands) _telemetryCmdMap[item['cmd']!] = _runParamController;
+    for (var item in _alarmParamCommands) _telemetryCmdMap[item['cmd']!] = _alarmParamController;
+    for (var item in _commParamCommands) _telemetryCmdMap[item['cmd']!] = _commParamController;
+    for (var item in _videoParamCommands) _telemetryCmdMap[item['cmd']!] = _videoParamController;
   }
 
   @override
@@ -388,6 +707,8 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                   String response = utf8.decode(value, allowMalformed: true); 
                   _addLog("收到: $response", direction: "RX", rawData: value);
                   
+                  _handleResponse(response);
+                  
                   // 收到回复，完成 Completer
                   if (_responseCompleter != null && !_responseCompleter!.isCompleted) {
                     _responseCompleter!.complete();
@@ -438,6 +759,35 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
     }
   }
 
+  void _handleResponse(String response) {
+    if (!response.contains(":")) return;
+    try {
+      int colonIndex = response.indexOf(":");
+      String header = response.substring(0, colonIndex);
+      String val = response.substring(colonIndex + 1).trim();
+      
+      // Extract command (part before first -)
+      String cmd = header.split("-")[0];
+      
+      if (mounted) {
+        setState(() {
+          // 根据当前 Tab 更新对应的控制器
+          if (_tabController.index == 0) {
+            if (_waterLevelCmdMap.containsKey(cmd)) {
+              _waterLevelCmdMap[cmd]!.text = val;
+            }
+          } else {
+            if (_telemetryCmdMap.containsKey(cmd)) {
+              _telemetryCmdMap[cmd]!.text = val;
+            }
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint("Parse error: $e");
+    }
+  }
+
   // 5. 发送命令核心函数
   Future<void> _sendCommand(String cmd) async {
     if (_writeCharacteristic == null) {
@@ -465,17 +815,8 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
       try {
         await _responseCompleter!.future.timeout(const Duration(seconds: 3));
       } on TimeoutException {
-        // 超时未收到回复，触发缓冲区重置
-        _addLog("超时未收到回复，尝试重置缓冲区...", direction: "ERROR");
-        
-        // 发送300个空格
-        String spaces = " " * 300;
-        List<int> spaceBytes = utf8.encode(spaces);
-        await _writeCharacteristic!.write(spaceBytes, withoutResponse: true);
-
-        // 等待10秒
-        await Future.delayed(const Duration(seconds: 10));
-        
+        // 超时未收到回复
+        _addLog("超时未收到回复", direction: "ERROR");
       }
 
     } catch (e) {
@@ -486,7 +827,17 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   }
 
   // 构建带地址的命令
-  void _sendParamCommand(String cmd, String value, {bool useTelemetryAddr = false}) {
+  void _sendParamCommand(String cmd, String value, {bool useTelemetryAddr = false, bool shouldPad = true}) {
+    String finalValue = value;
+    if (value.isNotEmpty && shouldPad) {
+      // 验证数字
+      if (int.tryParse(value) == null) return; 
+      // 超过四位不处理
+      if (value.length > 4) return;
+      // 补全至四位
+      finalValue = value.padLeft(4, '0');
+    }
+
     if (useTelemetryAddr) {
       String zone = _telemetryZoneController.text;
       String station = _telemetryStationController.text;
@@ -494,14 +845,14 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
       if (zone.isEmpty) zone = "000";
       if (station.isEmpty) station = "001";
       
-      String fullCmd = "$cmd-$zone-$station:$value";
+      String fullCmd = "$cmd-$zone-$station:$finalValue";
       _sendCommand(fullCmd);
     } else {
       String addr = _addressController.text;
       if (addr.isEmpty) {
         addr = "001"; 
       }
-      String fullCmd = "$cmd-$addr:$value";
+      String fullCmd = "$cmd-$addr:$finalValue";
       _sendCommand(fullCmd);
     }
   }
@@ -530,8 +881,21 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("FMCW50 水位计助手"),
+        title: const Text("南京疆瀚水务"),
         actions: [
+          IconButton(
+             icon: const Icon(Icons.code),
+             tooltip: "Modbus RTU",
+             onPressed: () {
+               Navigator.push(
+                 context,
+                 MaterialPageRoute(builder: (context) => ModbusRTUPage(
+                   writeCharacteristic: _writeCharacteristic,
+                   notifyCharacteristic: _notifyCharacteristic,
+                 ))
+               );
+             },
+          ),
           // 新增：日志页面入口
           IconButton(
             icon: const Icon(Icons.history),
@@ -690,7 +1054,12 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                     );
                                   }).toList(),
                                   onChanged: (value) {
-                                    if (value != null) setState(() => _selectedMeasureCmd = value);
+                                    if (value != null) {
+                                      setState(() {
+                                        _selectedMeasureCmd = value;
+                                        _measureParamController.clear();
+                                      });
+                                    }
                                   },
                                 ),
                               ),
@@ -739,7 +1108,12 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                     );
                                   }).toList(),
                                   onChanged: (value) {
-                                    if (value != null) setState(() => _selectedSystemCmd = value);
+                                    if (value != null) {
+                                      setState(() {
+                                        _selectedSystemCmd = value;
+                                        _systemParamController.clear();
+                                      });
+                                    }
                                   },
                                 ),
                               ),
@@ -867,7 +1241,12 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                     );
                                   }).toList(),
                                   onChanged: (value) {
-                                    if (value != null) setState(() => _selectedRunParamCmd = value);
+                                    if (value != null) {
+                                      setState(() {
+                                        _selectedRunParamCmd = value;
+                                        _runParamController.clear();
+                                      });
+                                    }
                                   },
                                 ),
                               ),
@@ -887,7 +1266,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                               ),
                               const SizedBox(width: 5),
                               ElevatedButton(
-                                onPressed: () => _sendParamCommand(_selectedRunParamCmd, _runParamController.text, useTelemetryAddr: true),
+                                onPressed: () => _sendParamCommand(_selectedRunParamCmd, _runParamController.text, useTelemetryAddr: true, shouldPad: false),
                                 style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
                                 child: const Text("发送"),
                               ),
@@ -920,7 +1299,12 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                         );
                                       }).toList(),
                                       onChanged: (value) {
-                                        if (value != null) setState(() => _selectedAlarmParamCmd = value);
+                                        if (value != null) {
+                                          setState(() {
+                                            _selectedAlarmParamCmd = value;
+                                            _alarmParamController.clear();
+                                          });
+                                        }
                                       },
                                     ),
                                   ),
@@ -945,7 +1329,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                   ),
                                   const SizedBox(width: 5),
                                   ElevatedButton(
-                                    onPressed: () => _sendParamCommand(_selectedAlarmParamCmd, _alarmParamController.text, useTelemetryAddr: true),
+                                    onPressed: () => _sendParamCommand(_selectedAlarmParamCmd, _alarmParamController.text, useTelemetryAddr: true, shouldPad: false),
                                     style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
                                     child: const Text("发送"),
                                   ),
@@ -980,7 +1364,12 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                         );
                                       }).toList(),
                                       onChanged: (value) {
-                                        if (value != null) setState(() => _selectedCommParamCmd = value);
+                                        if (value != null) {
+                                          setState(() {
+                                            _selectedCommParamCmd = value;
+                                            _commParamController.clear();
+                                          });
+                                        }
                                       },
                                     ),
                                   ),
@@ -1005,7 +1394,7 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                   ),
                                   const SizedBox(width: 5),
                                   ElevatedButton(
-                                    onPressed: () => _sendParamCommand(_selectedCommParamCmd, _commParamController.text, useTelemetryAddr: true),
+                                    onPressed: () => _sendParamCommand(_selectedCommParamCmd, _commParamController.text, useTelemetryAddr: true, shouldPad: false),
                                     style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
                                     child: const Text("发送"),
                                   ),
@@ -1078,7 +1467,12 @@ class _WaterLevelAppState extends State<WaterLevelApp> with SingleTickerProvider
                                     );
                                   }).toList(),
                                   onChanged: (value) {
-                                    if (value != null) setState(() => _selectedVideoParamCmd = value);
+                                    if (value != null) {
+                                      setState(() {
+                                        _selectedVideoParamCmd = value;
+                                        _videoParamController.clear();
+                                      });
+                                    }
                                   },
                                 ),
                               ),
